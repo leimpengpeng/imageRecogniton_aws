@@ -1,0 +1,235 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "AWS CloudFormation creates all necessary AWS resources",
+
+  "Parameters" : {
+    "BundleObjectKey" : {
+      "Description" : "The ZIP object prefix for the code bundle",
+      "Type" : "String",
+      "Default" : "tf_bundle.zip",
+      "MinLength" : "1",
+      "MaxLength" : "80"
+    },
+    "BucketConfiguration" : {
+      "Description" : "Bucket where the code bundle and tensorFlow model will be located",
+      "Type" : "String",
+      "Default" : "tf-reko-config",
+      "MinLength" : "1",
+      "MaxLength" : "80"
+    },
+    "BucketTest" : {
+      "Description" : "Bucket where the test images and output image will be located",
+      "Type" : "String",
+      "Default" : "tf-reko-test",
+      "MinLength" : "1",
+      "MaxLength" : "80"
+    },
+
+    "TriggerFolder" : {
+      "Description" : "Folder where the test images will be located to trigger lambda function",
+      "Type" : "String",
+      "Default" : "trigger-in",
+      "MinLength" : "1",
+      "MaxLength" : "80"
+    },
+    "ModelFolder" : {
+      "Description" : "Folder where the tensorflow model will be located",
+      "Type" : "String",
+      "Default" : "model-in",
+      "MinLength" : "1",
+      "MaxLength" : "80"
+    },
+    "SaveOutput" : {
+      "Description" : "Folder of output image (ROI of test images)",
+      "Type" : "String",
+      "Default" : "save-output",
+      "MinLength" : "1",
+      "MaxLength" : "80"
+    },
+    "ObjectName" : {
+      "Description" : "Target Object Name for AWS rekognition ",
+      "Type" : "String",
+      "Default" : "Animal",
+      "MinLength" : "1",
+      "MaxLength" : "200"
+    }
+  },
+
+  "Resources" : {
+
+    "TFReKoServerlessLambdaRole" : {
+      "Type" : "AWS::IAM::Role",
+      "Properties" : {
+        "RoleName": "TFRekoLambdaRole",
+        "AssumeRolePolicyDocument": {
+          "Version" : "2012-10-17",
+          "Statement": [ {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [ "lambda.amazonaws.com" ]
+            },
+            "Action": [ "sts:AssumeRole" ]
+          } ]
+        },
+        "Path": "/",
+         "Policies": [ {
+            "PolicyName": "root",
+            "PolicyDocument": {
+
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Action": [
+                        "logs:CreateLogGroup",
+                        "logs:CreateLogStream",
+                        "logs:GetLogEvents",
+                        "logs:PutLogEvents"
+                      ],
+                      "Resource": "arn:aws:logs:*:*:*"
+                  },
+                  {
+                    "Sid": "Stmt1501000329789",
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:Get*"
+                    ],
+                    "Resource": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "arn:aws:s3:::", {"Ref": "BucketTest"}, "/", {"Ref": "TriggerFolder"}, "/*"
+                            ]
+                        ]
+                    }
+                },
+                {
+                    "Sid": "Stmt150100867543",
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:Get*"
+                    ],
+                    "Resource": {
+                        "Fn::Join": [
+                            "",
+                           [
+                                "arn:aws:s3:::", {"Ref": "BucketConfiguration"}, "/", {"Ref": "ModelFolder"}, "/*"
+                            ]
+                        ]
+                    }
+                },
+                  {
+                    "Sid": "Stmt150100867544",
+                    "Effect": "Allow",
+                    "Action": [
+                      "rekognition:DetectLabels",
+                      "rekognition:ListCollections"
+                    ],
+                    "Resource": "*"
+                  },
+                  {
+                    "Sid": "Stmt150100867545",
+                    "Effect": "Allow",
+                    "Action": [
+                         "s3:PutObject"
+                    ],
+                    "Resource": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "arn:aws:s3:::",
+                                {"Ref": "BucketTest"},
+                                "/*"
+                            ]
+                        ]
+                    }
+                }
+                  
+
+              ]
+            }
+          } ]
+        }
+      },
+
+      "tfrekoLambdaDetails": {
+    		"Type": "AWS::Lambda::Function",
+    		"Properties": {
+    			"Handler": "tf_function.lambda_handler",
+    			"FunctionName": "tfrekoLambda",
+    			"Role": {
+    				"Fn::GetAtt": ["TFReKoServerlessLambdaRole", "Arn"]
+    			},
+    			"Description": " AWS Lambda for (TF + AWS image rekognition)",
+    			"MemorySize": 1400,
+    			"Code": {
+    				"S3Bucket": {"Ref": "BucketConfiguration"},
+    				"S3Key": {"Ref": "BundleObjectKey"}
+    			},
+    			"Runtime": "python2.7",
+    			"Timeout": "300",
+    			"Environment": {
+    				"Variables": {
+              "bucket_config": {"Ref": "BucketConfiguration"},
+              "bucket_test": {"Ref": "BucketTest"},
+              "save_folder": {"Ref": "SaveOutput"},
+              "targeted_object_names": {"Ref": "ObjectName"},
+    					"region": { "Ref": "AWS::Region" }
+    				}
+    			}
+    		}
+    	},
+
+      "ExecuteLambdaPermission": {
+          "Type" : "AWS::Lambda::Permission",
+          "Properties" : {
+              "Action":"lambda:invokeFunction",
+              "FunctionName": { "Fn::GetAtt": [ "tfrekoLambdaDetails", "Arn" ]},
+              "Principal": "s3.amazonaws.com",
+              "SourceAccount": {"Ref" : "AWS::AccountId" },
+                        "SourceArn": {
+                        "Fn::Join": [":", [
+                            "arn","aws","s3","", ""
+                            ,{"Ref" : "BucketTest"}]]
+                    }
+            }
+        },
+
+      "S3Bucket" : {
+        "Type" : "AWS::S3::Bucket",
+        "Properties" : {
+          "BucketName" : {"Ref": "BucketTest"},
+          "NotificationConfiguration" : {
+            "LambdaConfigurations" : [{
+              "Function" : { "Fn::GetAtt" : ["tfrekoLambdaDetails", "Arn"] },
+              "Event" : "s3:ObjectCreated:*",
+              "Filter": {
+                    "S3Key": {
+                        "Rules": [
+                            {
+                                "Name": "prefix",
+                                "Value": {"Ref": "TriggerFolder"}
+                            }
+                        ]
+                    }
+            }
+            }
+          ]
+        }
+      }
+    }
+  },
+
+  "Outputs" : {
+    "outLambdaRole" : {
+      "Value" : { "Ref" : "TFReKoServerlessLambdaRole" },
+      "Description" : "AWS Role for the lambda functions"
+    },
+
+    "outDeeplearningLambda" : {
+      "Value" : { "Ref" : "tfrekoLambdaDetails" },
+      "Description" : "This is ARN of the our deep learning Lambda function"
+    }
+  }
+}
